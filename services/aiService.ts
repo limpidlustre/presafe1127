@@ -1,33 +1,28 @@
 import { GoogleGenAI } from '@google/genai';
 import OpenAI from 'openai';
-import { Model, models } from '../constants';
+import { models, ModelProvider } from '../constants';
 import { products } from './productData';
 
-// 辅助函数：将文件转换为不带前缀的纯 Base64 字符串
+// 图片转 Base64 (保持不变)
 const fileToBase64 = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.readAsDataURL(file);
     reader.onload = () => {
       const result = reader.result as string;
-      // remove "data:mime/type;base64," prefix
       resolve(result.split(',')[1]);
     };
     reader.onerror = (error) => reject(error);
   });
 };
 
-export const analyzeMealSafety = async (files: File[], model: Model, additionalInfo: string): Promise<string> => {
+export const analyzeMealSafety = async (files: File[], modelId: string, additionalInfo: string): Promise<string> => {
   
-  // 1. 查找当前模型属于哪个厂商 (Google 还是 OpenAI/DeepSeek)
-  // 注意：这里需要 constants.ts 里导出的 models 数组包含 provider 字段
-  const selectedModelConfig = models.find(m => m.id === model);
-  const provider = selectedModelConfig?.provider || 'google'; // 默认为 google 以兼容旧代码
+  // 1. 获取当前模型配置
+  const selectedModel = models.find(m => m.id === modelId);
+  if (!selectedModel) throw new Error("未找到模型配置");
 
-  // ==================================================================================
-  // 准备提示词 (Prompts) - 无论用哪个模型，提示词都是通用的
-  // ==================================================================================
-  
+  // ================= 准备提示词 (Prompts) =================
   const dbInstruction = `**内部产品数据库：**
 你有一个内部产品数据库，其中包含已知产品的详细信息。这是数据库的内容：
 \`\`\`json
@@ -103,104 +98,77 @@ ${dbInstruction}
 
   const userPrompt = `这是我需要你分析的预制菜。补充信息如下：\n\n${additionalInfo || '无补充信息。'}`;
 
+  // ================= 厂商分流逻辑 =================
 
-  // ==================================================================================
-  // 分支逻辑：根据 provider 决定使用 Google SDK 还是 OpenAI SDK
-  // ==================================================================================
-
-  // 🔴 分支 1: Google Gemini (使用原有的 GoogleGenAI SDK)
-  if (provider === 'google') {
+  // 🔴 1. Google Gemini
+  if (selectedModel.provider === ModelProvider.GOOGLE) {
     const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+    if (!apiKey) throw new Error("请在 Vercel 配置 VITE_GEMINI_API_KEY");
 
-    if (!apiKey) {
-      throw new Error("未配置 Google API Key。请在 Vercel 环境变量中设置 VITE_GEMINI_API_KEY");
-    }
-
-    const ai = new GoogleGenAI({ apiKey: apiKey });
+    const ai = new GoogleGenAI({ apiKey });
     
-    // Gemini 格式：inlineData (无需 data:image 前缀)
     const imageParts = await Promise.all(
       files.map(async (file) => {
-        const base64Data = await fileToBase64(file);
+        const base64Data = await fileToBase64(file); // Gemini 只需要纯 Base64
         return {
-          inlineData: {
-            mimeType: file.type,
-            data: base64Data,
-          },
+          inlineData: { mimeType: file.type, data: base64Data },
         };
       })
     );
 
-    const contents = {
-      parts: [
-        { text: userPrompt },
-        ...imageParts,
-      ],
-    };
-
-    // 注意：Gemini 1.5 系列可能对 systemInstruction 支持更完善
     const response = await ai.models.generateContent({
-      model: model as string,
-      contents,
-      config: {
-          systemInstruction,
-      }
+      model: modelId,
+      contents: { parts: [{ text: userPrompt }, ...imageParts] },
+      config: { systemInstruction }
     });
 
-    return response.text || "生成内容为空";
+    return response.text || "未生成内容";
   }
 
-  // 🔵 分支 2: OpenAI 兼容厂商 (DeepSeek / 豆包 / ChatGPT)
-  else {
-    const apiKey = import.meta.env.VITE_LLM_API_KEY;
-    const baseURL = import.meta.env.VITE_LLM_BASE_URL;
+  // 🔵 2. OpenAI 兼容厂商 (DeepSeek / Qwen / Doubao / ChatGPT)
+  else if (selectedModel.provider === ModelProvider.OPENAI) {
+    
+    // 动态获取 API Key 和 URL
+    // 如果 constants.ts 里定义了 envKey='QWEN'，则读取 VITE_QWEN_API_KEY
+    // 否则读取默认的 VITE_LLM_API_KEY
+    const envPrefix = selectedModel.envKey || 'LLM'; 
+    const apiKey = import.meta.env[`VITE_${envPrefix}_API_KEY`];
+    const baseURL = import.meta.env[`VITE_${envPrefix}_BASE_URL`];
 
     if (!apiKey || !baseURL) {
-      throw new Error(`未配置通用 LLM 环境变量。请设置 VITE_LLM_API_KEY 和 VITE_LLM_BASE_URL (当前尝试使用: ${provider})`);
+      throw new Error(`未配置环境变量: VITE_${envPrefix}_API_KEY 或 BASE_URL`);
     }
 
-    // 初始化 OpenAI 客户端
     const client = new OpenAI({
-      baseURL: baseURL,
-      apiKey: apiKey,
-      dangerouslyAllowBrowser: true // 允许在前端使用
+      baseURL,
+      apiKey,
+      dangerouslyAllowBrowser: true
     });
 
-    // OpenAI 格式：image_url (必须带 data:image 前缀)
     const imageMessages = await Promise.all(
       files.map(async (file) => {
         const rawBase64 = await fileToBase64(file);
         return {
           type: "image_url",
           image_url: {
-            url: `data:${file.type};base64,${rawBase64}`,
+            url: `data:${file.type};base64,${rawBase64}`, // OpenAI 需要 Data URL 前缀
             detail: "high"
           }
         };
       })
     );
 
-    // 构建消息历史
-    const messages: any[] = [
-      {
-        role: "system",
-        content: systemInstruction + "\n\n" + dbInstruction // 将指令合并到 System Prompt
-      },
-      {
-        role: "user",
-        content: [
-          { type: "text", text: userPrompt },
-          ...imageMessages
-        ]
-      }
-    ];
-
     const response = await client.chat.completions.create({
-      model: model as string, // 使用 constants.ts 中定义的模型 ID (如 'deepseek-chat')
-      messages: messages,
+      model: modelId, // 例如 'qwen-plus'
+      messages: [
+        { role: "system", content: systemInstruction + "\n\n" + dbInstruction },
+        { role: "user", content: [{ type: "text", text: userPrompt }, ...imageMessages] }
+      ],
       temperature: 0.7,
     });
 
-    return response.choices[0].message.content || "生成内容为空";
+    return response.choices[0].message.content || "未生成内容";
   }
+
+  throw new Error("不支持的模型提供商");
 };
