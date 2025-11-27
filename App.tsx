@@ -3,13 +3,14 @@ import pako from 'pako';
 import { FileUpload } from './components/FileUpload';
 import { ResultDisplay } from './components/ResultDisplay';
 import { HistoryModal } from './components/HistoryModal';
-import { Model, models } from './constants';
+import { models } from './constants';
 import { analyzeMealSafety } from './services/geminiService';
 import { addReportToHistory, ReportHistoryItem } from './utils/history';
 
 const App: React.FC = () => {
   const [files, setFiles] = useState<File[]>([]);
-  const [model, setModel] = useState<Model>(Model.FLASH);
+  // 修改 1: 默认选中配置列表中的第一个模型 (ID 字符串)
+  const [model, setModel] = useState<string>(models[0].id);
   const [additionalInfo, setAdditionalInfo] = useState('');
   const [analysisResult, setAnalysisResult] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
@@ -48,14 +49,16 @@ const App: React.FC = () => {
     setAnalysisResult('');
 
     try {
+      // 调用分析服务 (传入 string 类型的 model ID)
       const result = await analyzeMealSafety(files, model, additionalInfo);
       setAnalysisResult(result);
+      
       const newReport: ReportHistoryItem = {
         id: Date.now(),
         title: result.split('\n')[1]?.replace('#', '').trim() || '分析报告',
         date: new Date().toLocaleString('zh-CN'),
         content: result,
-        model: model,
+        model: model, // 保存模型 ID
       };
       addReportToHistory(newReport);
 
@@ -194,14 +197,17 @@ const App: React.FC = () => {
                   <div>
                     <label htmlFor="model-select" className="block text-sm font-semibold text-slate-700 mb-2">选择分析模型</label>
                     <div className="relative">
+                      {/* 修改 2: 更新下拉菜单逻辑以支持多厂商显示 */}
                       <select
                         id="model-select"
                         value={model}
-                        onChange={(e) => setModel(e.target.value as Model)}
+                        onChange={(e) => setModel(e.target.value)}
                         className="w-full appearance-none bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-slate-700 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent transition-all"
                       >
                         {models.map((m) => (
-                          <option key={m.id} value={m.id}>{m.name}</option>
+                          <option key={m.id} value={m.id}>
+                            {m.name} {m.provider === 'google' ? '(Gemini)' : '(OpenAI/DS)'}
+                          </option>
                         ))}
                       </select>
                       <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-slate-500">
