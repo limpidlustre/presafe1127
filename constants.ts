@@ -15,17 +15,16 @@ export interface ModelConfig {
 export const models: ModelConfig[] = [
     // --- Google Gemini 系列 (共用 VITE_GEMINI_API_KEY) ---
     { 
-        id: 'gemini-1.5-flash', 
-        name: 'Gemini 1.5 Flash (快速)', 
+        id: 'gemini-2.5-flash', 
+        name: 'Gemini 2.5 Flash (快速)', 
         provider: ModelProvider.GOOGLE 
     },
     { 
-        id: 'gemini-1.5-pro', 
-        name: 'Gemini 1.5 Pro (强力)', 
+        id: 'gemini-2.5-pro', 
+        name: 'Gemini 2.5 Pro (强力)', 
         provider: ModelProvider.GOOGLE 
     },
-    // 注意：Google 目前没有 2.5 版本，最新是 1.5 Pro 或 2.0 Flash Experimental
-    // 如果你想用 2.0，可以使用 'gemini-2.0-flash-exp'
+
 
     // --- DeepSeek (使用 VITE_DEEPSEEK_...) ---
     { 
