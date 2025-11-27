@@ -16,12 +16,19 @@ const fileToBase64 = (file: File): Promise<string> => {
   });
 };
 
+// ... imports
+
 export const analyzeMealSafety = async (files: File[], model: Model, additionalInfo: string): Promise<string> => {
-  if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable not set");
+  // 1. 使用 import.meta.env 读取，且变量名必须以 VITE_ 开头
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+
+  if (!apiKey) {
+    // 友好的错误提示
+    throw new Error("未配置 API Key。请在 Vercel 环境变量中设置 VITE_GEMINI_API_KEY");
   }
 
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const ai = new GoogleGenAI({ apiKey: apiKey });
+  // ... 后续代码不变
   const geminiModel = model;
 
   const imageParts = await Promise.all(
