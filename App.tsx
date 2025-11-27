@@ -4,7 +4,7 @@ import { FileUpload } from './components/FileUpload';
 import { ResultDisplay } from './components/ResultDisplay';
 import { HistoryModal } from './components/HistoryModal';
 import { models } from './constants';
-import { analyzeMealSafety } from './services/geminiService';
+import { analyzeMealSafety } from './services/aiService';
 import { addReportToHistory, ReportHistoryItem } from './utils/history';
 
 const App: React.FC = () => {
