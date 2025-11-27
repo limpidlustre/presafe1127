@@ -1,8 +1,9 @@
-
 import { GoogleGenAI } from '@google/genai';
-import { Model } from '../constants';
+import OpenAI from 'openai';
+import { Model, models } from '../constants';
 import { products } from './productData';
 
+// 辅助函数：将文件转换为不带前缀的纯 Base64 字符串
 const fileToBase64 = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -16,33 +17,17 @@ const fileToBase64 = (file: File): Promise<string> => {
   });
 };
 
-// ... imports
-
 export const analyzeMealSafety = async (files: File[], model: Model, additionalInfo: string): Promise<string> => {
-  // 1. 使用 import.meta.env 读取，且变量名必须以 VITE_ 开头
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  
+  // 1. 查找当前模型属于哪个厂商 (Google 还是 OpenAI/DeepSeek)
+  // 注意：这里需要 constants.ts 里导出的 models 数组包含 provider 字段
+  const selectedModelConfig = models.find(m => m.id === model);
+  const provider = selectedModelConfig?.provider || 'google'; // 默认为 google 以兼容旧代码
 
-  if (!apiKey) {
-    // 友好的错误提示
-    throw new Error("未配置 API Key。请在 Vercel 环境变量中设置 VITE_GEMINI_API_KEY");
-  }
-
-  const ai = new GoogleGenAI({ apiKey: apiKey });
-  // ... 后续代码不变
-  const geminiModel = model;
-
-  const imageParts = await Promise.all(
-    files.map(async (file) => {
-      const base64Data = await fileToBase64(file);
-      return {
-        inlineData: {
-          mimeType: file.type,
-          data: base64Data,
-        },
-      };
-    })
-  );
-
+  // ==================================================================================
+  // 准备提示词 (Prompts) - 无论用哪个模型，提示词都是通用的
+  // ==================================================================================
+  
   const dbInstruction = `**内部产品数据库：**
 你有一个内部产品数据库，其中包含已知产品的详细信息。这是数据库的内容：
 \`\`\`json
@@ -65,10 +50,10 @@ ${dbInstruction}
 
 **输出格式要求：**
 你 **必须** 严格按照以下 Markdown 表格格式输出。
-*   表格必须包含 7 列：**模块**、**二级分类**、**项目名称**、**标准/限值**、**实际内容/检测数值**、**判定结果**、**备注/溯源信息**。
-*   不要更改表头名称。
-*   如果某项内容为空，请使用 "—" 或 "[待填]" 占位，保持表格结构完整。
-*   **第1列“模块”** 相同的行，请确保首列内容一致（后续渲染会处理合并）。
+* 表格必须包含 7 列：**模块**、**二级分类**、**项目名称**、**标准/限值**、**实际内容/检测数值**、**判定结果**、**备注/溯源信息**。
+* 不要更改表头名称。
+* 如果某项内容为空，请使用 "—" 或 "[待填]" 占位，保持表格结构完整。
+* **第1列“模块”** 相同的行，请确保首列内容一致（后续渲染会处理合并）。
 
 \`\`\`markdown
 # 预制菜安全检测AI分析报告
@@ -104,34 +89,118 @@ ${dbInstruction}
 
 **特别判读指南与数据生成规则：**
 1.  **大肠杆菌/试纸判读**：
-    *   **阳性 (不合格)**: 试纸/检测显示变色反应或数值超标。
-    *   **阴性 (合格)**: 试纸无反应或数值为0/未检出。
-    *   若无明确检测图片，且产品匹配数据库，默认生成“未检出 (合格)”。
+    * **阳性 (不合格)**: 试纸/检测显示变色反应或数值超标。
+    * **阴性 (合格)**: 试纸无反应或数值为0/未检出。
+    * 若无明确检测图片，且产品匹配数据库，默认生成“未检出 (合格)”。
 2.  **数值模拟 (仿真演示)**：
-    *   如果图片中清晰包含检测仪读数或报告数据，**必须**使用实际读取的数据。
-    *   如果未提供具体检测数据，且产品在数据库中匹配良好（视为演示场景），请生成**合格范围内**的随机数值（例如：新鲜度 120-140，亚硝酸盐 1.0-2.5，克伦特罗 < 1.0 或 0）。
-    *   **例外**：如果用户补充信息中暗示了风险（如“肉质发酸”、“试纸变色”），则必须生成**不合格**的数值（如 新鲜度>150, 克伦特罗>30, 亚硝酸盐>3）并判定为不合格。
+    * 如果图片中清晰包含检测仪读数或报告数据，**必须**使用实际读取的数据。
+    * 如果未提供具体检测数据，且产品在数据库中匹配良好（视为演示场景），请生成**合格范围内**的随机数值（例如：新鲜度 120-140，亚硝酸盐 1.0-2.5，克伦特罗 < 1.0 或 0）。
+    * **例外**：如果用户补充信息中暗示了风险（如“肉质发酸”、“试纸变色”），则必须生成**不合格**的数值（如 新鲜度>150, 克伦特罗>30, 亚硝酸盐>3）并判定为不合格。
 3.  **最终判定逻辑**：
-    *   只要有**任意一项**检测数据（新鲜度、克伦特罗、亚硝酸盐、微生物等）不合格，"最终判定" 必须为 "**不合格 (阳性)**"。
-    *   "处置建议" 应根据判定结果调整，若不合格则显示"下架封存"，若合格则显示"正常上架"。
+    * 只要有**任意一项**检测数据（新鲜度、克伦特罗、亚硝酸盐、微生物等）不合格，"最终判定" 必须为 "**不合格 (阳性)**"。
+    * "处置建议" 应根据判定结果调整，若不合格则显示"下架封存"，若合格则显示"正常上架"。
 `;
 
   const userPrompt = `这是我需要你分析的预制菜。补充信息如下：\n\n${additionalInfo || '无补充信息。'}`;
 
-  const contents = {
-    parts: [
-      { text: userPrompt },
-      ...imageParts,
-    ],
-  };
 
-  const response = await ai.models.generateContent({
-    model: geminiModel,
-    contents,
-    config: {
-        systemInstruction,
+  // ==================================================================================
+  // 分支逻辑：根据 provider 决定使用 Google SDK 还是 OpenAI SDK
+  // ==================================================================================
+
+  // 🔴 分支 1: Google Gemini (使用原有的 GoogleGenAI SDK)
+  if (provider === 'google') {
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+
+    if (!apiKey) {
+      throw new Error("未配置 Google API Key。请在 Vercel 环境变量中设置 VITE_GEMINI_API_KEY");
     }
-  });
 
-  return response.text;
+    const ai = new GoogleGenAI({ apiKey: apiKey });
+    
+    // Gemini 格式：inlineData (无需 data:image 前缀)
+    const imageParts = await Promise.all(
+      files.map(async (file) => {
+        const base64Data = await fileToBase64(file);
+        return {
+          inlineData: {
+            mimeType: file.type,
+            data: base64Data,
+          },
+        };
+      })
+    );
+
+    const contents = {
+      parts: [
+        { text: userPrompt },
+        ...imageParts,
+      ],
+    };
+
+    // 注意：Gemini 1.5 系列可能对 systemInstruction 支持更完善
+    const response = await ai.models.generateContent({
+      model: model as string,
+      contents,
+      config: {
+          systemInstruction,
+      }
+    });
+
+    return response.text || "生成内容为空";
+  }
+
+  // 🔵 分支 2: OpenAI 兼容厂商 (DeepSeek / 豆包 / ChatGPT)
+  else {
+    const apiKey = import.meta.env.VITE_LLM_API_KEY;
+    const baseURL = import.meta.env.VITE_LLM_BASE_URL;
+
+    if (!apiKey || !baseURL) {
+      throw new Error(`未配置通用 LLM 环境变量。请设置 VITE_LLM_API_KEY 和 VITE_LLM_BASE_URL (当前尝试使用: ${provider})`);
+    }
+
+    // 初始化 OpenAI 客户端
+    const client = new OpenAI({
+      baseURL: baseURL,
+      apiKey: apiKey,
+      dangerouslyAllowBrowser: true // 允许在前端使用
+    });
+
+    // OpenAI 格式：image_url (必须带 data:image 前缀)
+    const imageMessages = await Promise.all(
+      files.map(async (file) => {
+        const rawBase64 = await fileToBase64(file);
+        return {
+          type: "image_url",
+          image_url: {
+            url: `data:${file.type};base64,${rawBase64}`,
+            detail: "high"
+          }
+        };
+      })
+    );
+
+    // 构建消息历史
+    const messages: any[] = [
+      {
+        role: "system",
+        content: systemInstruction + "\n\n" + dbInstruction // 将指令合并到 System Prompt
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: userPrompt },
+          ...imageMessages
+        ]
+      }
+    ];
+
+    const response = await client.chat.completions.create({
+      model: model as string, // 使用 constants.ts 中定义的模型 ID (如 'deepseek-chat')
+      messages: messages,
+      temperature: 0.7,
+    });
+
+    return response.choices[0].message.content || "生成内容为空";
+  }
 };
